@@ -234,7 +234,10 @@ jobs:
           if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne 'CF509534A8F5F8AF9C98ED7CBB8F135439F145A8CBE7E50EDE42BB5B5AB45C29') {
             throw 'Official Weasel installer SHA-256 mismatch; refusing to extract or package'
           }
-          7z x $installer -oweasel-official\extracted -y 2>&1 | Tee-Object -FilePath windows-weasel-extract.log
+          $extractDir = 'weasel-official\extracted-aou'
+          if (Test-Path -LiteralPath $extractDir) { throw 'Refusing to reuse an extraction directory' }
+          New-Item -ItemType Directory -Path $extractDir | Out-Null
+          7z x $installer "-o$extractDir" -aou 2>&1 | Tee-Object -FilePath windows-weasel-extract.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Check official x64 compatibility and create gated Sandbox package
