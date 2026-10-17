@@ -249,22 +249,51 @@ def main():
                 f"Test gate failed: {group}")
         tests[group] = {"passed": len(ran), "failed": 0, "not_run": len(cases) - len(ran)}
 
-    extracted = root / "weasel-official" / "extracted"
+    extracted = root / "weasel-official" / "extracted-aou"
+    # Paths/hashes come from the SHA-verified installer diagnosis, not suffix guesses.
+    expected_hashes = {
+        "WeaselServer.exe": "fef5af4516092a1ca26e4e307d118583ad3ff5df547a35fb66cb490ff99ef35b",
+        "WeaselDeployer.exe": "6bea82d1b1e20864806dbce4b322233c188a381a806c4ebdb899d9ee7e89367a",
+        "rime.dll": "2d8f1bc3737635a11d9fb1bfca4dc9e70533633930a8a0142a81ca879c39c45b",
+    }
     official = {}
-    for name in ("WeaselServer.exe", "WeaselDeployer.exe"):
-        matches = [p for p in extracted.rglob(name) if PE(p).machine == 0x8664]
+    verified_official = {}
+    for name in (*expected_hashes, "WinSparkle.dll"):
+        stem, suffix = os.path.splitext(name)
+        pattern = re.compile(re.escape(stem) + r"(?:_\d+)?" + re.escape(suffix), re.I)
+        family = [p for p in extracted.rglob("*") if p.is_file() and pattern.fullmatch(p.name)]
+        matches = [p for p in family if PE(p).machine == 0x8664]
         require(len(matches) == 1, f"Expected one official x64 {name}, found {matches}")
-        official[name] = matches[0]
+        selected = matches[0]  # Only after asserting uniqueness across renamed variants.
+        require(selected.relative_to(extracted).as_posix() == name,
+                f"Official x64 path differs from diagnosed path: {selected}")
+        digest = sha(selected)
+        if name in expected_hashes:
+            require(digest == expected_hashes[name], f"Official x64 {name} SHA-256 mismatch")
+        else:
+            require(selected.stat().st_size == 2797056, "WinSparkle size differs from installer diagnosis")
+        official[name] = selected
+        verified_official[name] = {"relative_path": selected.relative_to(root).as_posix(),
+                                   "sha256": digest, "machine": "0x8664", "unique_x64_count": 1}
+        print("VERIFIED_OFFICIAL_X64 " + json.dumps(verified_official[name]), flush=True)
     original = official["WeaselServer.exe"].parent / "rime.dll"
+    require(original == official["rime.dll"], "Official x64 core does not share the server directory")
     require(PE(original).machine == 0x8664, "Official core is not x64")
     candidate = root / "librime" / "dist" / "lib" / "rime.dll"
     require(PE(candidate).machine == 0x8664, "Patched core is not x64")
     exported = PE(candidate).exports()
     imports = {}
-    for name, executable in official.items():
-        required = PE(executable).imports().get("rime.dll")
+    for name in ("WeaselServer.exe", "WeaselDeployer.exe"):
+        executable = official[name]
+        executable_imports = PE(executable).imports()
+        required = executable_imports.get("rime.dll")
         require(required and not (set(required) - exported), f"Unsatisfied Rime imports in {name}: {required}")
-        imports[name] = {"machine": "AMD64", "sha256": sha(executable), "rime_imports": required}
+        sparkle_required = executable_imports.get("winsparkle.dll", [])
+        require(not (set(sparkle_required) - PE(official["WinSparkle.dll"]).exports()),
+                f"Unsatisfied official WinSparkle imports in {name}")
+        imports[name] = {"machine": "AMD64", "sha256": sha(executable), "rime_imports": required,
+                         "winsparkle_imports": sparkle_required}
+        print("VERIFIED_WEASEL_IMPORTS " + json.dumps({name: imports[name]}), flush=True)
 
     # Staging is never uploaded if any later check fails.
     stage = root / "sandbox-staging"
@@ -302,6 +331,8 @@ def main():
     original_probe = probe(original)
     patched_probe = probe(runtime / "rime.dll")
     require(original_probe == patched_probe, "Original/patched API probe differs")
+    print("VERIFIED_CORE_API_PROBES " + json.dumps(
+        {"official": original_probe, "patched": patched_probe, "runtime_dependencies": dependencies}), flush=True)
 
     notices = stage / "licenses"
     sources = {"librime": root / "librime", "librime-lua": root / "librime/plugins/lua",
@@ -344,6 +375,7 @@ def main():
                 "dependency_commits": submodules.splitlines(),
                 "official_installer_url": "https://github.com/rime/weasel/releases/download/0.17.4/" + INSTALLER,
                 "official_installer_sha256": INSTALLER_SHA, "official_original_rime_sha256": sha(original),
+                "verified_official_x64_files": verified_official,
                 "weasel_import_checks": imports, "official_core_probe": original_probe,
                 "patched_core_probe": patched_probe, "runtime_dependencies": dependencies, "tests": tests,
                 "limits": ["Official installer and Weasel executables were not executed.",
