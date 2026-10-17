@@ -1,0 +1,63 @@
+name: librime 1.13.1 preedit Linux test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CC: gcc
+      CXX: g++
+    defaults:
+      run:
+        working-directory: librime
+    steps:
+      - name: Checkout test repository
+        uses: actions/checkout@v4
+
+      - name: Checkout librime 1.13.1
+        uses: actions/checkout@v4
+        with:
+          repository: rime/librime
+          ref: 1c23358157934bd6e6d6981f0c0164f05393b497
+          path: librime
+
+      - name: Verify and apply unchanged second patch
+        run: |
+          echo '7616ddf0cf913136af4bb201a75580e6aaad9cd6e38dc28d67ec106fd9c1a557  ../librime-1.13.1-preedit-fallback.patch' | sha256sum --check -
+          git apply --check ../librime-1.13.1-preedit-fallback.patch
+          git apply ../librime-1.13.1-preedit-fallback.patch
+
+      - name: Install dependency using official script
+        run: ./action-install-linux.sh
+
+      - name: Build and test using official command
+        run: make test
+        env:
+          CMAKE_GENERATOR: Ninja
+          GTEST_FILTER: PreeditInputTest.*
+          GTEST_OUTPUT: xml:${{ github.workspace }}/preedit-results.xml
+
+      - name: Print actual preedit test results
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: |
+          if test -f preedit-results.xml; then
+            cat preedit-results.xml
+          else
+            echo 'No test XML was produced; build or test startup did not complete.'
+          fi
+
+      - name: Save preedit test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preedit-results
+          path: preedit-results.xml
+          if-no-files-found: ignore
+          retention-days: 7
