@@ -1,0 +1,33 @@
+Windows Sandbox 測試包；只能在隔離環境使用，不能當作正式更新程式。
+
+1. 在主機解壓測試 ZIP。用 PowerShell 的 Get-FileHash -Algorithm SHA256 核對 ZIP
+   與 patched-x64\rime.dll，對照下載頁、ZIP.sha256 和 SHA256SUMS.txt。
+   其他檔案清單與版本見 file-list.json、versions-and-checks.json。
+2. 編輯 Sandbox.wsb 的 HostFolder，填入「解壓後測試包資料夾」的完整路徑。
+   只掛載此資料夾，保留 ReadOnly=true。不要掛載主機的 Rime 或 Weasel 安裝目錄。
+   此設定已停用網路、剪貼簿、音訊與視訊分享，沒有自動安裝或覆蓋命令。
+3. 開啟 Sandbox.wsb。在 Sandbox 內將 C:\SandboxInput 複製到 C:\SandboxWork。
+   後續所有安裝、停止服務與 DLL 複製動作，都只能在 Sandbox 視窗裡進行。
+4. 只在 Sandbox 內執行 official\weasel-0.17.4.0-installer.exe，使用官方預設安裝。
+   本包沒有修改此安裝程式。若安裝或輸入法註冊無法在 Sandbox 內完成，停止並記錄；
+   不要改在主機安裝，也不要以主機重新啟動代替隔離測試。
+5. 先確認官方小狼毫能在 Sandbox 記事本正常輸入，再退出 Sandbox 裡的小狼毫服務。
+   在 Sandbox 工作管理員確認 WeaselServer.exe、WeaselDeployer.exe 均已結束。
+6. 找出 Sandbox 安裝目錄內同時放有 WeaselServer.exe、WeaselDeployer.exe、rime.dll
+   的資料夾。確認是 x64 服務；把該處原始 rime.dll 改名為 rime.original.dll 備份，
+   再手動複製 C:\SandboxWork\patched-x64\ 內的檔案到此處。不要改 weaselx64.dll
+   或其他 Weasel UI/TSF 檔案。重新啟動 Sandbox 裡的 WeaselServer.exe。
+7. 本包不包含 bopomofo_tw 私人設定、個人詞庫或洋蔥 Lua。若要驗收你的完整設定，
+   只在本機另建暫存副本，以另外的唯讀暫存資料夾映射至 Sandbox，再於 Sandbox
+   拷入它自己的使用者資料夾；不要掛載正在使用的 Rime 資料夾，不要上傳 GitHub。
+   若需新增映射，先核對路徑確實是獨立暫存副本，並保留 ReadOnly=true。
+8. 在 Sandbox 記事本檢查：ㄕㄨㄖ 顯示注音而非 gjb；完整 ㄕㄨㄖㄨˋ 可選「輸入」；
+   游標位於中間時顯示與選取位置合理；嚴格注音不提前組詞；左右逐音節移動；
+   空白鍵第一聲；左 Shift 中英切換；其他方案；實際提交文字與預期一致。
+   與原有設定相關的項目，必須先在 Sandbox 放入相同設定才能判定。
+9. 記錄成功或錯誤畫面；關閉 Sandbox 後其安裝及變更會被丟棄。
+
+相容性界線：CI 已檢查官方 x64 EXE 的 Rime 匯入、新 DLL 匯出、必要相依、
+受限搜尋路徑下的 Windows DLL 載入及 Rime API 版本。它沒有啟動官方安裝程式、
+WeaselServer 或 WeaselDeployer，也沒有完成 Weasel UI、TSF、Sandbox、整套洋蔥 Lua
+實機驗收。不可把這份測試包或 CI 結果當作正式部署許可。僅供 AMD64/x64 使用。
