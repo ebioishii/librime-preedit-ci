@@ -2,12 +2,53 @@ name: librime 1.13.1 Windows MSVC x64 test
 
 on:
   workflow_dispatch:
+    inputs:
+      diagnose_installer:
+        description: 'Evidence only: list and compare NSIS extraction; do not build or package'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 jobs:
+  diagnose-installer:
+    if: ${{ inputs.diagnose_installer }}
+    runs-on: windows-2022
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Preserve exact patch bytes
+        run: git config --global core.autocrlf false
+      - name: Checkout diagnostic source only
+        uses: actions/checkout@v4
+      - name: Download official installer without executing it
+        run: |
+          New-Item -ItemType Directory -Path weasel-official | Out-Null
+          Invoke-WebRequest -Uri 'https://github.com/rime/weasel/releases/download/0.17.4/weasel-0.17.4.0-installer.exe' -OutFile 'weasel-official\weasel-0.17.4.0-installer.exe'
+      - name: Verify hashes and collect NSIS extraction evidence only
+        run: |
+          python ci\package_sandbox.py --diagnose-installer 2>&1 | Tee-Object -FilePath windows-installer-diagnosis.log
+          exit $LASTEXITCODE
+      - name: Preserve text diagnostics only, even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weasel-0.17.4-installer-diagnostics
+          path: |
+            installer-diagnostics/*.txt
+            installer-diagnostics/*.json
+            installer-diagnostics/*.log
+            windows-installer-diagnosis.log
+          if-no-files-found: error
+          retention-days: 14
+
   build:
+    if: ${{ !inputs.diagnose_installer }}
     runs-on: windows-2022
     timeout-minutes: 30
     env:
