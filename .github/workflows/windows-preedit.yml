@@ -34,10 +34,10 @@ jobs:
           submodules: recursive
           path: librime
 
-      - name: Verify and apply unchanged second patch
+      - name: Verify and apply second patch with test-only MSVC fix
         run: |
           $patch = Join-Path $env:GITHUB_WORKSPACE 'librime-1.13.1-preedit-fallback.patch'
-          $expected = '7616DDF0CF913136AF4BB201A75580E6AAAD9CD6E38DC28D67EC106FD9C1A557'
+          $expected = 'D73347ABE76DC87FEF859B5A63DEDEB571A796009265DDF4D4C404BB3AC888CA'
           if ((Get-FileHash -LiteralPath $patch -Algorithm SHA256).Hash -ne $expected) {
             throw 'Patch SHA-256 mismatch'
           }
