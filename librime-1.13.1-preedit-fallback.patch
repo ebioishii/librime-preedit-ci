@@ -132,7 +132,7 @@ index 49a1947..f5edfd1 100644
    an<Translation> result_;
 diff --git a/test/composition_test.cc b/test/composition_test.cc
 new file mode 100644
-index 0000000..e6cc2de
+index 0000000..ec26d3e
 --- /dev/null
 +++ b/test/composition_test.cc
 @@ -0,0 +1,199 @@
@@ -202,11 +202,11 @@ index 0000000..e6cc2de
 +    // Reuse the repository's real dictionary fixture and existing compiler.
 +    // Generated dictionary binaries stay in the test working directory.
 +    if (!dictionary_ready_) {
-+      Dictionary dictionary(
++      the<Dictionary> dictionary(new Dictionary(
 +          "dictionary_test", {},
 +          {New<Table>(path{"dictionary_test.table.bin"})},
-+          New<Prism>(path{"dictionary_test.prism.bin"}));
-+      DictCompiler compiler(&dictionary);
++          New<Prism>(path{"dictionary_test.prism.bin"})));
++      DictCompiler compiler(dictionary.get());
 +      ASSERT_TRUE(compiler.Compile(path()));
 +      dictionary_ready_ = true;
 +    }
