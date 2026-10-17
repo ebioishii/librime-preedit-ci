@@ -1,0 +1,134 @@
+name: librime 1.13.1 Windows MSVC x64 test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      boost_version: 1.84.0
+      BOOST_ROOT: ${{ github.workspace }}\librime\deps\boost-1.84.0
+      RIME_PLUGINS: ''
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: librime
+    steps:
+      - name: Preserve exact patch bytes
+        working-directory: ${{ github.workspace }}
+        run: git config --global core.autocrlf false
+
+      - name: Checkout test repository
+        uses: actions/checkout@v4
+
+      - name: Checkout librime 1.13.1 and dependencies
+        uses: actions/checkout@v4
+        with:
+          repository: rime/librime
+          ref: 1c23358157934bd6e6d6981f0c0164f05393b497
+          submodules: recursive
+          path: librime
+
+      - name: Verify and apply unchanged second patch
+        run: |
+          $patch = Join-Path $env:GITHUB_WORKSPACE 'librime-1.13.1-preedit-fallback.patch'
+          $expected = '7616DDF0CF913136AF4BB201A75580E6AAAD9CD6E38DC28D67EC106FD9C1A557'
+          if ((Get-FileHash -LiteralPath $patch -Algorithm SHA256).Hash -ne $expected) {
+            throw 'Patch SHA-256 mismatch'
+          }
+          git apply --check $patch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git apply $patch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Configure MSVC x64 using official workflow action
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure CMake and Ninja on isolated runner
+        run: |
+          python -m pip install cmake==3.31.6 ninja
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
+          $scripts | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & (Join-Path $scripts 'cmake.exe') --version
+          & (Join-Path $scripts 'ninja.exe') --version
+
+      - name: Create official build environment
+        run: |
+          @'
+          set RIME_ROOT=%CD%
+          set CXX=cl
+          set CC=cl
+          set CMAKE_GENERATOR=Ninja
+          '@ | Set-Content -LiteralPath env.bat -Encoding ascii
+          if ($env:VSCMD_ARG_TGT_ARCH -ne 'x64') { throw 'MSVC target is not x64' }
+          Get-Content env.bat
+          cmake --version
+
+      - name: Install Boost using official script
+        run: |
+          & .\install-boost.bat 2>&1 | Tee-Object -FilePath "$env:GITHUB_WORKSPACE\windows-boost.log"
+          exit $LASTEXITCODE
+
+      - name: Build dependencies using official script
+        run: |
+          & .\build.bat deps 2>&1 | Tee-Object -FilePath "$env:GITHUB_WORKSPACE\windows-deps.log"
+          exit $LASTEXITCODE
+
+      - name: Build librime and run four preedit tests using official script
+        run: |
+          & .\build.bat test 2>&1 | Tee-Object -FilePath "$env:GITHUB_WORKSPACE\windows-build-preedit.log"
+          $result = $LASTEXITCODE
+          $ctestLog = 'build\test\Testing\Temporary\LastTest.log'
+          if (Test-Path -LiteralPath $ctestLog) {
+            Copy-Item -LiteralPath $ctestLog -Destination "$env:GITHUB_WORKSPACE\windows-preedit-ctest.log"
+          }
+          exit $result
+        env:
+          GTEST_FILTER: PreeditInputTest.*
+          GTEST_OUTPUT: xml:${{ github.workspace }}\windows-preedit-results.xml
+
+      - name: Run existing core tests without repeating preedit tests
+        run: |
+          ctest --test-dir build\test -C Release --output-on-failure 2>&1 | Tee-Object -FilePath "$env:GITHUB_WORKSPACE\windows-core.log"
+          $result = $LASTEXITCODE
+          $ctestLog = 'build\test\Testing\Temporary\LastTest.log'
+          if (Test-Path -LiteralPath $ctestLog) {
+            Copy-Item -LiteralPath $ctestLog -Destination "$env:GITHUB_WORKSPACE\windows-core-ctest.log"
+          }
+          exit $result
+        env:
+          GTEST_FILTER: '-PreeditInputTest.*'
+          GTEST_OUTPUT: xml:${{ github.workspace }}\windows-core-results.xml
+
+      - name: Print actual test counts
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: |
+          foreach ($file in 'windows-preedit-results.xml', 'windows-core-results.xml') {
+            if (Test-Path -LiteralPath $file) {
+              [xml]$report = Get-Content -LiteralPath $file -Raw
+              Write-Output "$file : $($report.testsuites.OuterXml)"
+            } else {
+              Write-Output "$file : NOT RUN - no test XML produced"
+            }
+          }
+
+      - name: Save build logs and test results without binaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-msvc-x64-results
+          path: |
+            windows-*.log
+            windows-*-results.xml
+            librime/build/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: warn
+          retention-days: 14
