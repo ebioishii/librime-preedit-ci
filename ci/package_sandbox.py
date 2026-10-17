@@ -110,6 +110,97 @@ class PE:
         return result
 
 
+def diagnose_installer():
+    # Evidence only: no DLL loading, candidate selection, build, or packaging.
+    root = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+    installer = root / "weasel-official" / INSTALLER
+    require(sha(installer) == INSTALLER_SHA, "Official installer hash mismatch")
+    require(sha(root / "librime-1.13.1-preedit-fallback.patch") == PATCH_SHA, "Patch changed")
+    output = root / "installer-diagnostics"
+    require(not output.exists(), "Refusing to reuse a diagnostics directory")
+    output.mkdir()
+
+    def seven_zip(arguments, log_name):
+        command = ["7z", *arguments, "-sccUTF-8"]
+        result = subprocess.run(command, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, encoding="utf-8", errors="replace")
+        (output / log_name).write_text(result.stdout, encoding="utf-8")
+        require(result.returncode == 0, f"7-Zip failed ({result.returncode}); see {log_name}")
+        return result.stdout
+
+    version = seven_zip(["i"], "7zip-version-and-formats.txt")
+    listing = seven_zip(["l", "-slt", str(installer)], "installer-full-list-slt.txt")
+
+    def related(name):
+        name = name.casefold()
+        return ("weaselserver" in name or "weaseldeployer" in name
+                or ("rime" in name and ".dll" in name))
+
+    archive_entries = []
+    for block in re.split(r"\r?\n\s*\r?\n", listing):
+        fields = dict(line.split(" = ", 1) for line in block.splitlines() if " = " in line)
+        if "Path" in fields and "Type" not in fields:
+            archive_entries.append(fields)
+    require(archive_entries, "No archive entries parsed; raw SLT listing is retained")
+    by_path = {}
+    for entry in archive_entries:
+        by_path.setdefault(entry["Path"].replace("\\", "/").casefold(), []).append(entry)
+
+    machines = {0x014C: "I386", 0x8664: "AMD64", 0xAA64: "ARM64",
+                0xA641: "ARM64EC", 0xA64E: "ARM64X"}
+    inventories = {}
+    file_lists = {}
+    for label, switch in (("original-y", "-y"), ("preserve-aou", "-aou")):
+        directory = root / "weasel-official" / label
+        require(not directory.exists(), f"Refusing to reuse extraction directory: {label}")
+        directory.mkdir()
+        seven_zip(["x", str(installer), f"-o{directory}", switch], f"extract-{label}.log")
+        inventory = []
+        file_list = []
+        for path in sorted(directory.rglob("*")):
+            if not path.is_file():
+                continue
+            record = {"relative_path": path.relative_to(directory).as_posix(),
+                      "actual_name": path.name, "bytes": path.stat().st_size,
+                      "sha256": sha(path)}
+            file_list.append(dict(record))
+            if not related(path.name):
+                continue
+            try:
+                pe = PE(path)
+                record.update(machine=f"0x{pe.machine:04X}",
+                              machine_name=machines.get(pe.machine, "UNKNOWN"),
+                              optional_header="PE32+" if pe.is64 else "PE32")
+            except (RuntimeError, struct.error, ValueError, IndexError) as error:
+                record["pe_error"] = str(error)
+            inventory.append(record)
+        inventories[label] = inventory
+        file_lists[label] = file_list
+        (output / f"files-{label}.json").write_text(
+            json.dumps(file_list, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    original_hashes = {record["sha256"] for record in inventories["original-y"]}
+    report = {
+        "ci_commit": os.environ.get("GITHUB_SHA"),
+        "installer_sha256": sha(installer),
+        "patch_sha256": PATCH_SHA,
+        "seven_zip_version": next(line.strip() for line in version.splitlines() if "7-Zip" in line),
+        "archive_entry_count": len(archive_entries),
+        "related_archive_entries": [entry for entry in archive_entries if related(entry["Path"])],
+        "duplicate_archive_paths": {key: value for key, value in by_path.items() if len(value) > 1},
+        "extracted_file_counts": {label: len(files) for label, files in file_lists.items()},
+        "inventories": inventories,
+        "additional_contents_preserved_by_aou": [record for record in inventories["preserve-aou"]
+                                                if record["sha256"] not in original_hashes],
+        "compatibility_checked": False,
+        "package_created": False,
+        "note": "Substring matches are inventory only; production selection logic is unchanged.",
+    }
+    (output / "installer-diagnosis.json").write_text(
+        json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print("DIAGNOSTIC_REPORT " + json.dumps(report, ensure_ascii=False))
+
+
 def api_probe(dll, header):
     require(ctypes.sizeof(ctypes.c_void_p) == 8, "Probe must run as x64")
     # The unchanged pinned header defines the exact API-table field order.
@@ -135,6 +226,9 @@ def api_probe(dll, header):
 
 
 def main():
+    if sys.argv[1:] == ["--diagnose-installer"]:
+        diagnose_installer()
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "--probe":
         print(json.dumps(api_probe(Path(sys.argv[2]), Path(sys.argv[3]))))
         return
