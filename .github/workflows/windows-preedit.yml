@@ -13,7 +13,9 @@ jobs:
     env:
       boost_version: 1.84.0
       BOOST_ROOT: ${{ github.workspace }}\librime\deps\boost-1.84.0
-      RIME_PLUGINS: ''
+      RIME_PLUGINS: lua
+      GLOG_log_dir: ${{ github.workspace }}
+      GLOG_alsologtostderr: '1'
     defaults:
       run:
         shell: pwsh
@@ -33,6 +35,29 @@ jobs:
           ref: 1c23358157934bd6e6d6981f0c0164f05393b497
           submodules: recursive
           path: librime
+
+      - name: Checkout pinned librime-lua from the librime 1.13.1 release era
+        uses: actions/checkout@v4
+        with:
+          repository: hchunhui/librime-lua
+          ref: e3912a4b3ac2c202d89face3fef3d41eb1d7fcd6
+          path: librime/plugins/lua
+
+      - name: Checkout official in-tree Lua 5.4.7 sources
+        uses: actions/checkout@v4
+        with:
+          repository: hchunhui/librime-lua
+          ref: 115e000c878d1170337f7ca934d7a84f68986e39
+          path: librime/plugins/lua/thirdparty
+
+      - name: Install only synthetic Lua integration test fixtures
+        run: |
+          Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\ci\lua_preedit_test.cc" -Destination test\lua_preedit_test.cc
+          New-Item -ItemType Directory -Force -Path build\test\lua | Out-Null
+          Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\ci\ci_preedit_smoke.lua" -Destination build\test\lua\ci_preedit_smoke.lua
+          git -C plugins\lua rev-parse HEAD
+          git -C plugins\lua\thirdparty rev-parse HEAD
+          Select-String -LiteralPath plugins\lua\thirdparty\lua5.4\lua.h -Pattern 'LUA_VERSION_RELEASE\s'
 
       - name: Verify and apply second patch with test-only MSVC fix
         run: |
@@ -95,7 +120,20 @@ jobs:
           GTEST_FILTER: PreeditInputTest.*
           GTEST_OUTPUT: xml:${{ github.workspace }}\windows-preedit-results.xml
 
-      - name: Run existing core tests without repeating preedit tests
+      - name: Run Lua module and translator integration tests
+        run: |
+          ctest --test-dir build\test -C Release --output-on-failure 2>&1 | Tee-Object -FilePath "$env:GITHUB_WORKSPACE\windows-lua.log"
+          $result = $LASTEXITCODE
+          $ctestLog = 'build\test\Testing\Temporary\LastTest.log'
+          if (Test-Path -LiteralPath $ctestLog) {
+            Copy-Item -LiteralPath $ctestLog -Destination "$env:GITHUB_WORKSPACE\windows-lua-ctest.log"
+          }
+          exit $result
+        env:
+          GTEST_FILTER: LuaPreeditInputTest.*
+          GTEST_OUTPUT: xml:${{ github.workspace }}\windows-lua-results.xml
+
+      - name: Run existing core tests without repeating integration tests
         run: |
           ctest --test-dir build\test -C Release --output-on-failure 2>&1 | Tee-Object -FilePath "$env:GITHUB_WORKSPACE\windows-core.log"
           $result = $LASTEXITCODE
@@ -105,14 +143,14 @@ jobs:
           }
           exit $result
         env:
-          GTEST_FILTER: '-PreeditInputTest.*'
+          GTEST_FILTER: '-PreeditInputTest.*:LuaPreeditInputTest.*'
           GTEST_OUTPUT: xml:${{ github.workspace }}\windows-core-results.xml
 
       - name: Print actual test counts
         if: always()
         working-directory: ${{ github.workspace }}
         run: |
-          foreach ($file in 'windows-preedit-results.xml', 'windows-core-results.xml') {
+          foreach ($file in 'windows-preedit-results.xml', 'windows-lua-results.xml', 'windows-core-results.xml') {
             if (Test-Path -LiteralPath $file) {
               [xml]$report = Get-Content -LiteralPath $file -Raw
               Write-Output "$file : $($report.testsuites.OuterXml)"
@@ -120,6 +158,18 @@ jobs:
               Write-Output "$file : NOT RUN - no test XML produced"
             }
           }
+
+      - name: Check Lua runtime diagnostics
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: |
+          $logs = Get-ChildItem -LiteralPath . -Filter 'rime.test*.log' -File
+          $errors = $logs | Select-String -Pattern 'LuaTranslation::Next error|LuaTranslator::.*error|Lua Compoment.*error|rime\.lua error'
+          if ($errors) {
+            $errors | ForEach-Object { $_.ToString() } | Tee-Object -FilePath windows-lua-errors.log
+            throw 'Lua runtime errors were recorded; see windows-lua-errors.log'
+          }
+          Write-Output 'No Lua runtime errors found in captured Rime logs.'
 
       - name: Save build logs and test results without binaries
         if: always()
@@ -129,6 +179,7 @@ jobs:
           path: |
             windows-*.log
             windows-*-results.xml
+            rime.test*.log
             librime/build/CMakeFiles/CMakeConfigureLog.yaml
           if-no-files-found: warn
           retention-days: 14
