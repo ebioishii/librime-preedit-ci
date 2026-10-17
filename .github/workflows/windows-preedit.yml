@@ -183,3 +183,40 @@ jobs:
             librime/build/CMakeFiles/CMakeConfigureLog.yaml
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Download and inspect official Weasel installer without executing it
+        working-directory: ${{ github.workspace }}
+        run: |
+          New-Item -ItemType Directory -Path weasel-official | Out-Null
+          $installer = 'weasel-official\weasel-0.17.4.0-installer.exe'
+          Invoke-WebRequest -Uri 'https://github.com/rime/weasel/releases/download/0.17.4/weasel-0.17.4.0-installer.exe' -OutFile $installer
+          if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne 'CF509534A8F5F8AF9C98ED7CBB8F135439F145A8CBE7E50EDE42BB5B5AB45C29') {
+            throw 'Official Weasel installer SHA-256 mismatch; refusing to extract or package'
+          }
+          7z x $installer -oweasel-official\extracted -y 2>&1 | Tee-Object -FilePath windows-weasel-extract.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check official x64 compatibility and create gated Sandbox package
+        working-directory: ${{ github.workspace }}
+        run: |
+          python ci\package_sandbox.py 2>&1 | Tee-Object -FilePath windows-sandbox-package.log
+          exit $LASTEXITCODE
+
+      - name: Upload Sandbox package only after all tests and compatibility checks pass
+        uses: actions/upload-artifact@v4
+        with:
+          name: weasel-0.17.4-preedit-x64-sandbox
+          path: sandbox-output/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Preserve compatibility diagnostics even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-sandbox-compatibility-logs
+          path: |
+            windows-weasel-extract.log
+            windows-sandbox-package.log
+          if-no-files-found: warn
+          retention-days: 14
